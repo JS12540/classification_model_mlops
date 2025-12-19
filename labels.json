@@ -1,0 +1,19 @@
+{
+  "module_labels": [
+    "holdings",
+    "capital_gains",
+    "scheme_wise_returns",
+    "investment_account_wise_returns",
+    "portfolio_update",
+    "None_module"
+  ],
+  "date_labels": [
+    "Current Year",
+    "Previous Year",
+    "Daily",
+    "Monthly",
+    "Weekly",
+    "Yearly",
+    "None_date"
+  ]
+}
