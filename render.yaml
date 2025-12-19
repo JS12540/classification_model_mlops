@@ -3,8 +3,8 @@ services:
     name: reporting-intent-classifier
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn main:app --host 0.0.0.0 --port 8000"
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
-      - key: PORT
-        value: "8000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
