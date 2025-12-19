@@ -1,26 +1,49 @@
-FROM python:3.11-slim
+##############################################
+# Stage 1 — Builder
+##############################################
+FROM python:3.10-slim AS builder
 
-# Avoid Python writing .pyc files & buffering logs
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-# Set workdir
-WORKDIR /app
-
-# System deps (optional but often useful)
+# Install build tools (minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements & install
+# Create app directory
+WORKDIR /app
+
+# Copy requirement file
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app code
-COPY . .
+# Install dependencies into a wheel folder
+RUN pip install --upgrade pip \
+    && pip wheel --no-cache-dir --wheel-dir /app/wheels -r requirements.txt
 
-# Expose port (Render sets PORT env var but this is OK)
-EXPOSE 8000
+##############################################
+# Stage 2 — Final Light Runtime Image
+##############################################
+FROM python:3.10-slim AS runtime
 
-# Start server
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Install only runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy wheels from builder
+COPY --from=builder /app/wheels /wheels
+COPY --from=builder /app/requirements.txt .
+
+# Install wheels (offline install)
+RUN pip install --no-cache /wheels/*
+
+# Copy your model + code
+COPY tinybert_dual_classifier_quantized.onnx .
+COPY vocab.json .
+COPY tokenizer_config.json .
+COPY labels.json .
+COPY testing.py .
+
+# Default command
+CMD ["python", "testing.py"]
