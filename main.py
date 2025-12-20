@@ -13,6 +13,8 @@ from collections import deque
 
 import numpy as np
 import onnxruntime as ort
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, Form
@@ -71,6 +73,24 @@ def calculate_psi(expected, actual, bins=10):
             psi += (act_pct - exp_pct) * math.log(act_pct / exp_pct)
 
     return psi
+
+# ---------------- GRAPH UTILS ----------------
+def plot_probs(title: str, probs: Dict[str, float]) -> str:
+    labels = list(probs.keys())
+    values = list(probs.values())
+
+    plt.figure(figsize=(8, 5))
+    plt.barh(labels, values, color='#4A90E2')
+    plt.xlim(0, 1)
+    plt.xlabel('Probability')
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=100, bbox_inches='tight')
+    plt.close()
+
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 # ---------------- API MODELS ----------------
 class PredictRequest(BaseModel):
@@ -237,13 +257,84 @@ classifier = TinyBERTDualClassifierONNX(
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return """<form method="post" action="/predict">
-    <textarea name="text"></textarea><button>Run</button></form>"""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reporting Intent Classifier</title>
+        <meta charset="utf-8" />
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+            h1 { color: #333; }
+            textarea { width: 100%; height: 120px; padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
+            button { margin-top: 12px; padding: 10px 20px; font-size: 14px; cursor: pointer; background-color: #4A90E2; color: white; border: none; border-radius: 4px; }
+            button:hover { background-color: #357ABD; }
+            label { font-weight: bold; color: #555; }
+        </style>
+    </head>
+    <body>
+        <h1>Reporting Intent Classifier</h1>
+        <form method="post" action="/predict">
+            <label for="text">Enter a user query:</label><br/>
+            <textarea id="text" name="text" placeholder="Type a query here..."></textarea><br/>
+            <button type="submit">Classify</button>
+        </form>
+    </body>
+    </html>
+    """
 
 @app.post("/predict", response_class=HTMLResponse)
 async def predict(text: str = Form(...)):
     result = classifier.predict_all(text)
-    return f"<p>{result['module_best']} | {result['date_best']}</p>"
+
+    module_img = plot_probs("Module Probabilities", result["module_probs"])
+    date_img = plot_probs("Date Probabilities", result["date_probs"])
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Reporting Intent Classifier - Result</title>
+        <meta charset="utf-8" />
+        <style>
+            body {{ font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; }}
+            h1 {{ color: #333; }}
+            h2 {{ color: #555; margin-top: 30px; }}
+            h3 {{ color: #666; margin-top: 20px; }}
+            .input-box {{ background: #f9f9f9; padding: 15px; border-radius: 6px; margin-bottom: 20px; }}
+            .prediction-box {{ background: #e8f4f8; padding: 15px; border-radius: 6px; margin-bottom: 20px; }}
+            .prediction-box p {{ margin: 8px 0; font-size: 16px; }}
+            .prediction-box b {{ color: #333; }}
+            img {{ max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px; }}
+            a {{ color: #4A90E2; text-decoration: none; font-size: 16px; }}
+            a:hover {{ text-decoration: underline; }}
+        </style>
+    </head>
+    <body>
+        <h1>Reporting Intent Classifier</h1>
+        
+        <h2>Input Query</h2>
+        <div class="input-box">
+            <p>{text}</p>
+        </div>
+
+        <h2>Predictions</h2>
+        <div class="prediction-box">
+            <p><b>Module:</b> {result['module_best']}</p>
+            <p><b>Date:</b> {result['date_best']}</p>
+        </div>
+
+        <h3>Module Probabilities</h3>
+        <img src="data:image/png;base64,{module_img}" alt="Module Probabilities" />
+
+        <h3>Date Probabilities</h3>
+        <img src="data:image/png;base64,{date_img}" alt="Date Probabilities" />
+
+        <br/><br/>
+        <a href="/">← Try another query</a>
+    </body>
+    </html>
+    """
 
 @app.post("/api/predict", response_model=PredictResponse)
 async def api_predict(request: PredictRequest):
