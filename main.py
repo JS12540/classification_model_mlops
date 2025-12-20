@@ -1,11 +1,6 @@
 """
 TinyBERT Dual Classifier – Production FastAPI App
 """
-
-# ============================
-# Imports
-# ============================
-
 import json
 import base64
 import io
@@ -17,13 +12,9 @@ import onnxruntime as ort
 import matplotlib.pyplot as plt
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-
-# ============================
-# Logging
-# ============================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,10 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("reporting-intent")
 
-
-# ============================
-# Pydantic Schemas
-# ============================
 
 class PredictRequest(BaseModel):
     text: str = Field(
@@ -46,35 +33,14 @@ class PredictRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    module_best: str = Field(
-        ...,
-        example="holdings",
-        description="Predicted reporting module",
-    )
-    date_best: str = Field(
-        ...,
-        example="Monthly",
-        description="Predicted date period",
-    )
-    module_probs: Dict[str, float] = Field(
-        ...,
-        example={"holdings": 0.91, "capital_gains": 0.03},
-        description="Probability distribution over module labels",
-    )
-    date_probs: Dict[str, float] = Field(
-        ...,
-        example={"Monthly": 0.88, "Yearly": 0.05},
-        description="Probability distribution over date labels",
-    )
+    module_best: str
+    date_best: str
+    module_probs: Dict[str, float]
+    date_probs: Dict[str, float]
 
-
-# ============================
-# Tokenizer
-# ============================
 
 class SimpleTokenizer:
     def __init__(self, vocab_path: str, config_path: str):
-        logger.info("Loading tokenizer")
         with open(vocab_path, "r", encoding="utf-8") as f:
             self.vocab = json.load(f)
 
@@ -136,13 +102,8 @@ class SimpleTokenizer:
         )
 
 
-# ============================
-# Model
-# ============================
-
 class TinyBERTDualClassifierONNX:
     def __init__(self, model_path, vocab_path, tokenizer_config, labels_path):
-        logger.info("Loading ONNX model")
         self.session = ort.InferenceSession(
             model_path, providers=["CPUExecutionProvider"]
         )
@@ -154,16 +115,12 @@ class TinyBERTDualClassifierONNX:
         self.module_labels = labels["module_labels"]
         self.date_labels = labels["date_labels"]
 
-        logger.info("Model loaded successfully")
-
     @staticmethod
     def softmax(x):
         e = np.exp(x - np.max(x))
         return e / e.sum()
 
     def predict_all(self, text: str) -> Dict:
-        logger.info(f"Inference request: {text}")
-
         input_ids, attention_mask = self.tokenizer.encode(text)
 
         module_logits, date_logits = self.session.run(
@@ -174,27 +131,26 @@ class TinyBERTDualClassifierONNX:
         module_probs = self.softmax(module_logits[0])
         date_probs = self.softmax(date_logits[0])
 
-        result = {
-            "module_best": self.module_labels[int(np.argmax(module_probs))],
-            "date_best": self.date_labels[int(np.argmax(date_probs))],
-            "module_probs": dict(
-                zip(self.module_labels, map(float, module_probs))
-            ),
-            "date_probs": dict(
-                zip(self.date_labels, map(float, date_probs))
-            ),
+        max_module_prob = float(np.max(module_probs))
+        max_date_prob = float(np.max(date_probs))
+
+        if max_module_prob > 0.5:
+            module_best = self.module_labels[int(np.argmax(module_probs))]
+        else:
+            module_best = "None_module"
+
+        if max_date_prob > 0.5:
+            date_best = self.date_labels[int(np.argmax(date_probs))]
+        else:
+            date_best = "None_date"
+
+        return {
+            "module_best": module_best,
+            "date_best": date_best,
+            "module_probs": dict(zip(self.module_labels, map(float, module_probs))),
+            "date_probs": dict(zip(self.date_labels, map(float, date_probs))),
         }
 
-        logger.info(
-            f"Prediction → module={result['module_best']} | date={result['date_best']}"
-        )
-
-        return result
-
-
-# ============================
-# Graph Utils
-# ============================
 
 def plot_probs(title: str, probs: Dict[str, float]) -> str:
     labels = list(probs.keys())
@@ -213,10 +169,6 @@ def plot_probs(title: str, probs: Dict[str, float]) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# ============================
-# FastAPI App
-# ============================
-
 app = FastAPI(
     title="Reporting Intent Classifier",
     version="1.0.0",
@@ -230,10 +182,6 @@ classifier = TinyBERTDualClassifierONNX(
     labels_path="labels.json",
 )
 
-
-# ============================
-# Routes
-# ============================
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
@@ -280,12 +228,7 @@ async def predict(text: str = Form(...)):
     """
 
 
-@app.post(
-    "/api/predict",
-    response_model=PredictResponse,
-    summary="Predict reporting intent",
-    tags=["Inference"],
-)
+@app.post("/api/predict", response_model=PredictResponse)
 async def api_predict(request: PredictRequest):
     return classifier.predict_all(request.text)
 
@@ -293,3 +236,7 @@ async def api_predict(request: PredictRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
