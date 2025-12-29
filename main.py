@@ -1,6 +1,6 @@
 """
 TinyBERT Dual Classifier – Production FastAPI App
-WITH PER-REQUEST ANOMALY + POPULATION DRIFT METRICS
+WITH PER-REQUEST ANOMALY + PER-METRIC PSI + EMBEDDING DRIFT
 """
 
 # =========================
@@ -38,42 +38,22 @@ logger = logging.getLogger("reporting-intent")
 # =========================
 # METRICS
 # =========================
-MODEL_INFERENCE_TOTAL = Counter(
-    "model_inference_total", "Total model inferences"
-)
-MODEL_INFERENCE_LATENCY = Histogram(
-    "model_inference_latency_seconds", "Inference latency"
-)
+MODEL_INFERENCE_TOTAL = Counter("model_inference_total", "Total model inferences")
+MODEL_INFERENCE_LATENCY = Histogram("model_inference_latency_seconds", "Inference latency")
 
 AVG_QUERY_LENGTH = Gauge("avg_query_length", "Average query length")
 UNK_TOKEN_RATIO = Gauge("unk_token_ratio", "UNK token ratio")
 PREDICTION_ENTROPY = Gauge("prediction_entropy", "Prediction entropy")
 
-MODEL_LOW_CONFIDENCE_TOTAL = Counter(
-    "model_low_confidence_total", "Low confidence predictions"
-)
-
-MODULE_PREDICTION_TOTAL = Counter(
-    "module_prediction_total", "Module predictions", ["module"]
-)
-DATE_PREDICTION_TOTAL = Counter(
-    "date_prediction_total", "Date predictions", ["date"]
-)
+MODEL_LOW_CONFIDENCE_TOTAL = Counter("model_low_confidence_total", "Low confidence predictions")
+MODULE_PREDICTION_TOTAL = Counter("module_prediction_total", "Module predictions", ["module"])
+DATE_PREDICTION_TOTAL = Counter("date_prediction_total", "Date predictions", ["date"])
 
 # ---- DRIFT METRICS ----
-CONFIDENCE_PSI = Gauge("confidence_psi", "Confidence PSI")
-
-# 🔹 NEW: per-request anomaly metric
-EMBEDDING_POINT_DRIFT = Gauge(
-    "embedding_point_drift",
-    "Per-request embedding cosine distance vs training baseline"
-)
-
-# 🔹 Aggregated population drift
-EMBEDDING_DRIFT = Gauge(
-    "embedding_drift_score",
-    "Aggregated embedding drift score"
-)
+MODULE_PSI = Gauge("module_confidence_psi", "Module confidence PSI")
+DATE_PSI = Gauge("date_confidence_psi", "Date confidence PSI")
+EMBEDDING_POINT_DRIFT = Gauge("embedding_point_drift", "Per-request embedding cosine distance vs training baseline")
+EMBEDDING_DRIFT = Gauge("embedding_drift_score", "Aggregated embedding drift score")
 
 # =========================
 # PSI UTILITY
@@ -89,20 +69,14 @@ def calculate_psi(expected, actual, bins=10):
     psi = 0.0
 
     for i in range(len(breakpoints) - 1):
-        exp_pct = np.mean(
-            (expected >= breakpoints[i]) & (expected < breakpoints[i + 1])
-        )
-        act_pct = np.mean(
-            (actual >= breakpoints[i]) & (actual < breakpoints[i + 1])
-        )
-
+        exp_pct = np.mean((expected >= breakpoints[i]) & (expected < breakpoints[i + 1]))
+        act_pct = np.mean((actual >= breakpoints[i]) & (actual < breakpoints[i + 1]))
         if exp_pct > 0 and act_pct > 0:
             psi += (act_pct - exp_pct) * math.log(act_pct / exp_pct)
-
     return psi
 
 # =========================
-# GRAPH UTILS (UNCHANGED)
+# GRAPH UTILS
 # =========================
 def plot_probs(title: str, probs: Dict[str, float]) -> str:
     labels = list(probs.keys())
@@ -117,7 +91,6 @@ def plot_probs(title: str, probs: Dict[str, float]) -> str:
     buf = io.BytesIO()
     plt.savefig(buf, format="png")
     plt.close()
-
     return base64.b64encode(buf.getvalue()).decode()
 
 # =========================
@@ -139,52 +112,39 @@ class SimpleTokenizer:
 
     def encode(self, text: str):
         tokens = text.lower().split()
-
         AVG_QUERY_LENGTH.set(len(text))
         UNK_TOKEN_RATIO.set(tokens.count(self.unk_token) / max(len(tokens), 1))
 
-        ids = [self.cls_token_id] + [
-            self.vocab.get(t, self.unk_token_id) for t in tokens
-        ] + [self.sep_token_id]
-
+        ids = [self.cls_token_id] + [self.vocab.get(t, self.unk_token_id) for t in tokens] + [self.sep_token_id]
         ids = ids[: self.max_length]
         mask = [1] * len(ids)
-
         pad = self.max_length - len(ids)
         ids += [self.pad_token_id] * pad
         mask += [0] * pad
 
-        return (
-            np.array([ids], dtype=np.int64),
-            np.array([mask], dtype=np.int64),
-        )
+        return np.array([ids], dtype=np.int64), np.array([mask], dtype=np.int64)
 
 # =========================
 # MODEL
 # =========================
 class TinyBERTDualClassifierONNX:
     def __init__(self):
-        self.session = ort.InferenceSession(
-            "tinybert_dual_classifier_quantized.onnx",
-            providers=["CPUExecutionProvider"],
-        )
-
-        self.tokenizer = SimpleTokenizer(
-            "vocab.json", "tokenizer_config.json"
-        )
+        self.session = ort.InferenceSession("tinybert_dual_classifier_quantized.onnx", providers=["CPUExecutionProvider"])
+        self.tokenizer = SimpleTokenizer("vocab.json", "tokenizer_config.json")
 
         with open("labels.json") as f:
             labels = json.load(f)
-
         self.module_labels = labels["module_labels"]
         self.date_labels = labels["date_labels"]
 
         # ---- BASELINES ----
-        self.confidence_baseline = np.load("confidence_baseline.npy")
+        self.module_conf_baseline = np.load("module_conf_baseline.npy")
+        self.date_conf_baseline = np.load("date_conf_baseline.npy")
         self.embedding_baseline = np.load("embedding_baseline.npy")
 
         # ---- LIVE BUFFERS ----
-        self.confidence_live: Deque[float] = deque(maxlen=2000)
+        self.module_conf_live: Deque[float] = deque(maxlen=500)
+        self.date_conf_live: Deque[float] = deque(maxlen=500)
         self.embedding_live: Deque[np.ndarray] = deque(maxlen=2000)
 
     @staticmethod
@@ -201,47 +161,35 @@ class TinyBERTDualClassifierONNX:
         MODEL_INFERENCE_TOTAL.inc()
 
         input_ids, mask = self.tokenizer.encode(text)
-
-        module_logits, date_logits = self.session.run(
-            None, {"input_ids": input_ids, "attention_mask": mask}
-        )
+        module_logits, date_logits = self.session.run(None, {"input_ids": input_ids, "attention_mask": mask})
 
         module_probs = self.softmax(module_logits[0])
         date_probs = self.softmax(date_logits[0])
 
         # ---- confidence ----
-        max_conf = max(np.max(module_probs), np.max(date_probs))
-        self.confidence_live.append(max_conf)
+        module_max_conf = np.max(module_probs)
+        date_max_conf = np.max(date_probs)
+        max_conf = max(module_max_conf, date_max_conf)
+
+        self.module_conf_live.append(module_max_conf)
+        self.date_conf_live.append(date_max_conf)
 
         # ---- embedding ----
         embedding = np.concatenate([module_logits[0], date_logits[0]])
 
-        # 🔹 PER-REQUEST embedding anomaly
-        cos_sim = np.dot(embedding, self.embedding_baseline) / (
-            np.linalg.norm(embedding)
-            * np.linalg.norm(self.embedding_baseline)
-            + 1e-9
-        )
+        # 🔹 Per-request embedding anomaly
+        cos_sim = np.dot(embedding, self.embedding_baseline) / (np.linalg.norm(embedding) * np.linalg.norm(self.embedding_baseline) + 1e-9)
         EMBEDDING_POINT_DRIFT.set(1 - cos_sim)
 
-        # 🔹 store for aggregation
+        # 🔹 Store for aggregation
         self.embedding_live.append(embedding)
 
-        PREDICTION_ENTROPY.set(
-            self.entropy(module_probs) + self.entropy(date_probs)
-        )
-
+        PREDICTION_ENTROPY.set(self.entropy(module_probs) + self.entropy(date_probs))
         if max_conf < 0.5:
             MODEL_LOW_CONFIDENCE_TOTAL.inc()
 
-        module_best = (
-            self.module_labels[int(np.argmax(module_probs))]
-            if np.max(module_probs) > 0.5 else "None_module"
-        )
-        date_best = (
-            self.date_labels[int(np.argmax(date_probs))]
-            if np.max(date_probs) > 0.5 else "None_date"
-        )
+        module_best = self.module_labels[int(np.argmax(module_probs))] if module_max_conf > 0.5 else "None_module"
+        date_best = self.date_labels[int(np.argmax(date_probs))] if date_max_conf > 0.5 else "None_date"
 
         MODULE_PREDICTION_TOTAL.labels(module=module_best).inc()
         DATE_PREDICTION_TOTAL.labels(date=date_best).inc()
@@ -261,21 +209,18 @@ class TinyBERTDualClassifierONNX:
 def monitoring_worker(model):
     while True:
         time.sleep(60)
-
-        if len(model.confidence_live) == model.confidence_live.maxlen:
-            psi = calculate_psi(
-                model.confidence_baseline,
-                list(model.confidence_live),
-            )
-            CONFIDENCE_PSI.set(psi)
-
+        # ---- MODULE PSI ----
+        if len(model.module_conf_live) == model.module_conf_live.maxlen:
+            psi = calculate_psi(model.module_conf_baseline, list(model.module_conf_live))
+            MODULE_PSI.set(psi)
+        # ---- DATE PSI ----
+        if len(model.date_conf_live) == model.date_conf_live.maxlen:
+            psi = calculate_psi(model.date_conf_baseline, list(model.date_conf_live))
+            DATE_PSI.set(psi)
+        # ---- EMBEDDING AGGREGATED DRIFT ----
         if len(model.embedding_live) > 100:
             live_mean = np.mean(model.embedding_live, axis=0)
-            cos_sim = np.dot(live_mean, model.embedding_baseline) / (
-                np.linalg.norm(live_mean)
-                * np.linalg.norm(model.embedding_baseline)
-                + 1e-9
-            )
+            cos_sim = np.dot(live_mean, model.embedding_baseline) / (np.linalg.norm(live_mean) * np.linalg.norm(model.embedding_baseline) + 1e-9)
             EMBEDDING_DRIFT.set(1 - cos_sim)
 
 # =========================
@@ -286,11 +231,7 @@ Instrumentator().instrument(app).expose(app)
 
 classifier = TinyBERTDualClassifierONNX()
 
-threading.Thread(
-    target=monitoring_worker,
-    args=(classifier,),
-    daemon=True,
-).start()
+threading.Thread(target=monitoring_worker, args=(classifier,), daemon=True).start()
 
 @app.post("/api/predict")
 async def predict(req: Dict[str, str]):
