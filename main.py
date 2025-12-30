@@ -98,9 +98,9 @@ def plot_probs(title: str, probs: Dict[str, float]) -> str:
 # =========================
 class SimpleTokenizer:
     def __init__(self, vocab_path, config_path):
-        with open(vocab_path) as f:
+        with open(vocab_path, "r", encoding="utf-8") as f:
             self.vocab = json.load(f)
-        with open(config_path) as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
 
         self.max_length = cfg["max_length"]
@@ -161,7 +161,7 @@ class TinyBERTDualClassifierONNX:
         MODEL_INFERENCE_TOTAL.inc()
 
         input_ids, mask = self.tokenizer.encode(text)
-        module_logits, date_logits = self.session.run(None, {"input_ids": input_ids, "attention_mask": mask})
+        module_logits, date_logits, embedding  = self.session.run(None, {"input_ids": input_ids, "attention_mask": mask})
 
         module_probs = self.softmax(module_logits[0])
         date_probs = self.softmax(date_logits[0])
@@ -173,9 +173,6 @@ class TinyBERTDualClassifierONNX:
 
         self.module_conf_live.append(module_max_conf)
         self.date_conf_live.append(date_max_conf)
-
-        # ---- embedding ----
-        embedding = np.concatenate([module_logits[0], date_logits[0]])
 
         # 🔹 Per-request embedding anomaly
         cos_sim = np.dot(embedding, self.embedding_baseline) / (np.linalg.norm(embedding) * np.linalg.norm(self.embedding_baseline) + 1e-9)
