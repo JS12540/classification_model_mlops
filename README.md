@@ -248,3 +248,14 @@ To run as a service:
 - Default port is **9090**
 - Configuration changes require Prometheus restart
 - Data is stored in the **data** directory inside Prometheus folder
+
+## Benchmark Results
+
+| Metric | Value |
+|--------|-------|
+| Total requests | 130 |
+| Successful calls | 130 |
+| Failures | 0 |
+| Average latency | 0.703s |
+| P95 latency | 1.158s |
+| Max latency | 1.279s |
