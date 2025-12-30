@@ -55,6 +55,16 @@ DATE_PSI = Gauge("date_confidence_psi", "Date confidence PSI")
 EMBEDDING_POINT_DRIFT = Gauge("embedding_point_drift", "Per-request embedding cosine distance vs training baseline")
 EMBEDDING_DRIFT = Gauge("embedding_drift_score", "Aggregated embedding drift score")
 
+class PredictRequest(BaseModel):
+    text: str = Field(..., min_length=1, example="Generate monthly sales report")
+
+class PredictResponse(BaseModel):
+    module_best: str
+    date_best: str
+    module_probs: Dict[str, float]
+    date_probs: Dict[str, float]
+
+
 # =========================
 # PSI UTILITY
 # =========================
@@ -227,17 +237,72 @@ app = FastAPI(title="Reporting Intent Classifier")
 Instrumentator().instrument(app).expose(app)
 
 classifier = TinyBERTDualClassifierONNX()
-
 threading.Thread(target=monitoring_worker, args=(classifier,), daemon=True).start()
 
-@app.post("/api/predict")
-async def predict(req: Dict[str, str]):
-    return classifier.predict_all(req["text"])
+# ---------- UI HOME ----------
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return """
+    <html>
+    <head>
+        <title>Reporting Intent Classifier</title>
+        <style>
+            body { font-family: Arial; margin: 40px; }
+            textarea { width: 100%; height: 100px; font-size: 16px; }
+            button { padding: 10px 20px; font-size: 16px; }
+            img { margin-top: 20px; max-width: 800px; }
+        </style>
+    </head>
+    <body>
+        <h2>📊 Reporting Intent Classifier</h2>
+        <form action="/ui/predict" method="post">
+            <textarea name="text" placeholder="Enter query..."></textarea><br><br>
+            <button type="submit">Predict</button>
+        </form>
+    </body>
+    </html>
+    """
+
+# ---------- UI PREDICT ----------
+@app.post("/ui/predict", response_class=HTMLResponse)
+async def ui_predict(text: str = Form(...)):
+    result = classifier.predict_all(text)
+
+    module_plot = plot_probs("Module Probabilities", result["module_probs"])
+    date_plot = plot_probs("Date Probabilities", result["date_probs"])
+
+    return f"""
+    <html>
+    <head><title>Result</title></head>
+    <body>
+        <h3>Input</h3>
+        <p>{text}</p>
+
+        <h3>Predictions</h3>
+        <p><b>Module:</b> {result['module_best']}</p>
+        <p><b>Date:</b> {result['date_best']}</p>
+
+        <img src="data:image/png;base64,{module_plot}" />
+        <img src="data:image/png;base64,{date_plot}" />
+
+        <br><br>
+        <a href="/">⬅ Back</a>
+    </body>
+    </html>
+    """
+
+# ---------- JSON API ----------
+@app.post("/api/predict", response_model=PredictResponse)
+async def api_predict(req: PredictRequest):
+    return classifier.predict_all(req.text)
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
