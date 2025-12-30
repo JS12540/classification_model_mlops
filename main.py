@@ -56,7 +56,7 @@ EMBEDDING_POINT_DRIFT = Gauge("embedding_point_drift", "Per-request embedding co
 EMBEDDING_DRIFT = Gauge("embedding_drift_score", "Aggregated embedding drift score")
 
 class PredictRequest(BaseModel):
-    text: str = Field(..., min_length=1, example="Generate monthly sales report")
+    text: str = Field(..., min_length=1, example="Show me my current holdings")
 
 class PredictResponse(BaseModel):
     module_best: str
