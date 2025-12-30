@@ -153,8 +153,8 @@ class TinyBERTDualClassifierONNX:
         self.embedding_baseline = np.load("embedding_baseline.npy")
 
         # ---- LIVE BUFFERS ----
-        self.module_conf_live: Deque[float] = deque(maxlen=500)
-        self.date_conf_live: Deque[float] = deque(maxlen=500)
+        self.module_conf_live: Deque[float] = deque(maxlen=100)
+        self.date_conf_live: Deque[float] = deque(maxlen=100)
         self.embedding_live: Deque[np.ndarray] = deque(maxlen=2000)
 
     @staticmethod
@@ -217,11 +217,11 @@ def monitoring_worker(model):
     while True:
         time.sleep(60)
         # ---- MODULE PSI ----
-        if len(model.module_conf_live) == model.module_conf_live.maxlen:
+        if len(model.module_conf_live) >= 100:
             psi = calculate_psi(model.module_conf_baseline, list(model.module_conf_live))
             MODULE_PSI.set(psi)
         # ---- DATE PSI ----
-        if len(model.date_conf_live) == model.date_conf_live.maxlen:
+        if len(model.date_conf_live) >= 100:
             psi = calculate_psi(model.date_conf_baseline, list(model.date_conf_live))
             DATE_PSI.set(psi)
         # ---- EMBEDDING AGGREGATED DRIFT ----
