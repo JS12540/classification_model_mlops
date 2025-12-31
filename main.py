@@ -139,18 +139,18 @@ class SimpleTokenizer:
 # =========================
 class TinyBERTDualClassifierONNX:
     def __init__(self):
-        self.session = ort.InferenceSession(r"artifacts\tinybert_dual_classifier_quantized.onnx", providers=["CPUExecutionProvider"])
-        self.tokenizer = SimpleTokenizer(r"artifacts\vocab.json", r"artifacts\tokenizer_config.json")
+        self.session = ort.InferenceSession(r"artifacts/tinybert_dual_classifier_quantized.onnx", providers=["CPUExecutionProvider"])
+        self.tokenizer = SimpleTokenizer(r"artifacts/vocab.json", r"artifacts/tokenizer_config.json")
 
-        with open(r"artifacts\labels.json") as f:
+        with open(r"artifacts/labels.json") as f:
             labels = json.load(f)
         self.module_labels = labels["module_labels"]
         self.date_labels = labels["date_labels"]
 
         # ---- BASELINES ----
-        self.module_conf_baseline = np.load(r"artifacts\module_conf_baseline.npy")
-        self.date_conf_baseline = np.load(r"artifacts\date_conf_baseline.npy")
-        self.embedding_baseline = np.load(r"artifacts\embedding_baseline.npy")
+        self.module_conf_baseline = np.load(r"artifacts/module_conf_baseline.npy")
+        self.date_conf_baseline = np.load(r"artifacts/date_conf_baseline.npy")
+        self.embedding_baseline = np.load(r"artifacts/embedding_baseline.npy")
 
         # ---- LIVE BUFFERS ----
         self.module_conf_live: Deque[float] = deque(maxlen=100)
